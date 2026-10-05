@@ -1,0 +1,25 @@
+Driver,Index,Final selected model,R2,RMSE,BIC,p-value
+K,EI,Cubic polynomial regression,0.6371,0.0118,-1897.65,0
+K,SI,Cubic polynomial regression,0.7184,0.0102,-1959.36,0
+K,RI,Quadratic polynomial regression,0.5706,0.056,-1228.77,0
+K,VI,Cubic polynomial regression,0.6173,0.013,-1855.02,0
+HFP,EI,Cubic polynomial regression,0.6026,0.0085,-1324.43,0
+HFP,SI,Cubic polynomial regression,0.4745,0.0087,-1316.58,0
+HFP,RI,Cubic polynomial regression,0.8717,0.0231,-1043.04,0
+HFP,VI,Cubic polynomial regression,0.5923,0.0082,-1336.23,0
+LHI,EI,Cubic polynomial regression,0.3883,0.0065,-1308.05,0
+LHI,SI,Cubic polynomial regression,0.4465,0.0064,-1315.25,0
+LHI,RI,Cubic polynomial regression,0.7036,0.0225,-982.09,0
+LHI,VI,Cubic polynomial regression,0.4746,0.0069,-1292.96,0
+TM,EI,Quadratic polynomial regression,0.59,0.0131,-1068.45,0
+TM,SI,Quadratic polynomial regression,0.5026,0.0119,-1094.02,0.0028
+TM,RI,Quadratic polynomial regression,0.6678,0.0417,-779.68,0
+TM,VI,Quadratic polynomial regression,0.4631,0.0114,-1103.53,0
+PD,EI,Quadratic polynomial regression,0.0339,0.0061,-1240.81,0.0486
+PD,SI,Cubic polynomial regression,0.0639,0.006,-1240.73,0.0117
+PD,RI,Quadratic polynomial regression,0.2096,0.022,-924.69,0.0009
+PD,VI,Cubic polynomial regression,0.1515,0.0055,-1262.44,0.0012
+AI,EI,Quadratic polynomial regression,0.1295,0.0044,-1198.99,0.0001
+AI,SI,Logarithmic regression,0.0524,0.0037,-1241.91,0.0152
+AI,RI,Cubic polynomial regression,0.7169,0.016,-906.76,0
+AI,VI,Cubic polynomial regression,0.3534,0.0035,-1248.94,0

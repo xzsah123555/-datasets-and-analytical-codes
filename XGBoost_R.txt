@@ -1,0 +1,65 @@
+library(xgboost)
+library(data.table)
+library(caret)
+library(dplyr)
+library(SHAPforxgboost)
+
+#==== 数据预处理 ====
+dt <- fread("natureplants_all.csv")
+dt <- dt %>%
+  mutate(across(everything(), ~ifelse(. == -9999, NA, .))) %>%
+  na.omit() %>%
+  filter(RI < quantile(RI, 0.999) & RI > quantile(RI, 0.001))
+
+X <- dt %>% select(TM, LHI, K, HFP, PD, AI, PD_tau, AI_tau, LHI_tau) %>% as.matrix()
+y <- dt$RI
+
+#==== XGBoost参数 ====
+params <- list(
+  objective = "reg:squarederror", eval_metric = "rmse",
+  eta = 0.05, max_depth = 7, subsample = 0.85, colsample_bytree = 0.85,
+  gamma = 0.1, min_child_weight = 1
+)
+
+#==== 10折交叉验证 ====
+set.seed(123)
+folds <- createFolds(y, k = 10)
+cv_metrics <- list()
+mod_list <- list()
+
+for(i in seq_along(folds)){
+  test_idx <- folds[[i]]
+  X_tr <- X[-test_idx, ]; X_te <- X[test_idx, ]
+  y_tr <- y[-test_idx]; y_te <- y[test_idx]
+  
+  dtr <- xgb.DMatrix(X_tr, label = y_tr)
+  dte <- xgb.DMatrix(X_te, label = y_te)
+  
+  mod <- xgb.train(params = params, data = dtr, nrounds = 2000,
+                   watchlist = list(train = dtr, test = dte),
+                   early_stopping_rounds = 50, verbose = 0)
+  mod_list[[i]] <- mod
+  y_pred <- predict(mod, dte)
+  
+  rmse <- sqrt(mean((y_te - y_pred)^2))
+  mae  <- mean(abs(y_te - y_pred))
+  r2   <- 1 - sum((y_te - y_pred)^2) / sum((y_te - mean(y_te))^2)
+  cv_metrics[[i]] <- c(rmse = rmse, mae = mae, r2 = r2)
+}
+
+#==== 选最优折，训练全量模型 & SHAP ====
+cv_summary <- do.call(rbind, cv_metrics)
+best_idx <- which.max(sapply(cv_metrics, function(x) x["r2"]))
+feat_imp <- xgb.importance(colnames(X), model = mod_list[[best_idx]])
+
+dtrain_full <- xgb.DMatrix(X, label = y)
+final_mod <- xgb.train(params = params, data = dtrain_full,
+                       nrounds = mod_list[[best_idx]]$best_iteration, verbose = 0)
+
+y_pred_full <- predict(final_mod, dtrain_full)
+final_rmse <- sqrt(mean((y - y_pred_full)^2))
+final_mae  <- mean(abs(y - y_pred_full))
+final_r2   <- 1 - sum((y - y_pred_full)^2) / sum((y - mean(y))^2)
+
+shap_vals <- shap.values(xgb_model = final_mod, X_train = X)
+shap_long <- shap.prep(xgb_model = final_mod, X_train = X)

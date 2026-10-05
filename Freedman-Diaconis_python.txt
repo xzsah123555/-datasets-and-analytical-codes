@@ -1,0 +1,108 @@
+# Appendix: Freedman-Diaconis binning & binned smoothing (AI-editable PDF output)
+import pandas as pd
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+import matplotlib.ticker as ticker
+from matplotlib.lines import Line2D
+
+# PDF text settings for Adobe Illustrator editable text
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
+matplotlib.rcParams['font.family'] = 'sans-serif'
+matplotlib.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+start_time = time.time()
+
+# Path settings
+input_csv = r"natureplants.csv"
+
+# Variable definition
+x_vars = ['K', 'HFP', 'LHI', 'TM', 'PD', 'AI', 'PD_tau', 'AI_tau', 'LHI_tau']
+y_vars = {'EI':'Exposure Index', 'SI':'Sensitivity Index', 'RI':'Resilience Index', 'VI':'Vulnerability Index'}
+
+# Load and clean data
+all_cols = x_vars + list(y_vars.keys())
+df = pd.read_csv(input_csv, usecols=all_cols, dtype={col:'float32' for col in all_cols}, engine='c')
+df.replace([np.inf, -np.inf, -9999, 9999], np.nan, inplace=True)
+df.dropna(subset=all_cols, inplace=True)
+
+# Freedman-Diaconis rule for bin number
+def calculate_fd_bins(data, col):
+    n = len(data)
+    q75, q25 = np.percentile(data, [75,25])
+    iqr = q75 - q25
+    if iqr == 0:
+        std = np.std(data)
+        bin_width = 3.5 * std * (n**(-1/3)) if std>0 else None
+    else:
+        bin_width = 2 * iqr * (n**(-1/3))
+    data_range = data.max() - data.min()
+    n_bins = int(np.ceil(data_range / bin_width)) if (bin_width and bin_width>0) else 100
+    return max(50, min(n_bins, 5000))
+
+def bin_smooth(data, x_col, y_col):
+    n_bins = calculate_fd_bins(data[x_col], x_col)
+    data['bin'] = pd.cut(data[x_col], bins=n_bins, include_lowest=True)
+    binned = data.groupby('bin').agg(
+        x_min=(x_col,'min'), x_max=(x_col,'max'), x_median=(x_col,'median'),
+        y_median=(y_col,'median'), y_mean=(y_col,'mean'), y_max=(y_col,'max'),
+        y_std=(y_col,'std'), count=(y_col,'count')
+    ).reset_index()
+    binned = binned[binned['count']>50]
+    binned['analysis'] = f"{x_col}_vs_{y_col}"
+    binned['n_bins'] = n_bins
+    return binned[['analysis','n_bins','x_min','x_max','x_median','y_median','y_mean','y_max','y_std','count']]
+
+# Parallel bin calculation
+tasks = [(x,y) for x in x_vars for y in y_vars.keys()]
+with ThreadPoolExecutor(max_workers=4) as executor:
+    futures = [executor.submit(bin_smooth, df, x, y) for x,y in tasks]
+    results = [f.result() for f in futures]
+all_results = pd.concat(results, ignore_index=True)
+all_results.to_csv(output_stats, index=False)
+
+# Plot style setup
+stat_colors = {'median':'#1f77b4', 'mean':'#ff7f0e', 'max':'#2ca02c'}
+stats_to_plot = ['median','mean','max']
+legend_elements = [
+    Line2D([0],[0], color=stat_colors['median'], lw=3, label='Median Line'),
+    Line2D([0],[0], color=stat_colors['mean'], lw=3, label='Mean Line'),
+    Line2D([0],[0], color=stat_colors['max'], lw=3, label='Max Line'),
+    plt.Rectangle((0,0),1,1,fc=stat_colors['mean'], alpha=0.15, label='Mean ± Std Dev')
+]
+
+# Generate individual vector PDF plots
+for x_col in x_vars:
+    os.makedirs(os.path.join(single_fig_dir, x_col), exist_ok=True)
+for result in results:
+    if result.empty: continue
+    analysis = result['analysis'].iloc[0]
+    x_col, y_col = analysis.split('_vs_')
+    y_fullname = y_vars[y_col]
+    fig, ax = plt.subplots(figsize=(12,8), dpi=300)
+    x = result['x_median']
+    for stat in stats_to_plot:
+        ax.plot(x, result[f'y_{stat}'], 'o-', color=stat_colors[stat], linewidth=2.5, markersize=6)
+    if len(result)>3:
+        ax.fill_between(x, result['y_mean']-result['y_std'], result['y_mean']+result['y_std'], color=stat_colors['mean'], alpha=0.15)
+    ax.set_xlabel(x_col, fontsize=14)
+    ax.set_ylabel(f"{y_col} ({y_fullname})", fontsize=16)
+    ax.set_title(f"{x_col} vs {y_col} ({y_fullname}) (n_bins: {result['n_bins'].iloc[0]})", fontsize=16)
+    ax.grid(alpha=0.2, linestyle='--')
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=10))
+    ax.xaxis.set_minor_locator(ticker.AutoMinorLocator(4))
+    ax.tick_params(axis='x', which='minor', length=3, width=0.5)
+    ax.tick_params(axis='both', which='major', length=6, width=1, labelsize=12)
+    fig.legend(handles=legend_elements, loc='lower center', ncol=4, fontsize=12, frameon=True, framealpha=0.9, edgecolor='lightgray', bbox_to_anchor=(0.5,0.01))
+    plt.tight_layout(rect=[0,0.08,1,0.95])
+    pdf_path = os.path.join(single_fig_dir, x_col, f"{analysis}.pdf")
+    fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
+    plt.close(fig)
+
+print(f"Finished. Runtime: {time.time()-start_time:.2f} s")

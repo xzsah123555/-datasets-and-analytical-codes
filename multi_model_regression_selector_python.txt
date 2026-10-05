@@ -1,0 +1,267 @@
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.metrics import r2_score, mean_squared_error
+from scipy.optimize import curve_fit
+from scipy import stats
+
+def calculate_p_values(X, y, model):
+    y_pred = model.predict(X)
+    residuals = y - y_pred
+    n, p = X.shape[0], X.shape[1]
+    if (p + 1) >= n:
+        return np.ones(p + 1) * np.nan
+    sse = np.sum(residuals ** 2)
+    mse = sse / (n - p - 1)
+    X_with_intercept = np.c_[np.ones(n), X]
+    xtx = np.dot(X_with_intercept.T, X_with_intercept)
+    try:
+        xtx_inv = np.linalg.inv(xtx)
+    except np.linalg.LinAlgError:
+        return np.ones(p + 1) * np.nan
+    se = np.sqrt(mse * np.diag(xtx_inv))
+    coefs = np.hstack([model.intercept_, model.coef_])
+    t_stats = coefs / se
+    p_values = 2 * (1 - stats.t.cdf(np.abs(t_stats), df=n - p - 1))
+    return p_values
+
+def perform_linear_regression(X, y, degree=1):
+    if degree > 1:
+        poly = PolynomialFeatures(degree=degree, include_bias=False)
+        X_poly = poly.fit_transform(X)
+        model = LinearRegression(fit_intercept=True)
+        model.fit(X_poly, y)
+        y_pred = model.predict(X_poly)
+        model.poly = poly
+        p_values = calculate_p_values(X_poly, y, model)
+    else:
+        model = LinearRegression(fit_intercept=True)
+        model.fit(X, y)
+        y_pred = model.predict(X)
+        p_values = calculate_p_values(X, y, model)
+    return model, y_pred, p_values
+
+def perform_exponential_regression(X, y):
+    X_flat = X.ravel()
+    def exp_func(x, a, b):
+        return a * np.exp(b * x)
+    try:
+        popt, pcov = curve_fit(exp_func, X_flat, y, p0=(1, 0.1), bounds=([-np.inf, -10], [np.inf, 10]))
+        y_pred = exp_func(X_flat, *popt)
+        perr = np.sqrt(np.diag(pcov))
+        t_values = popt / perr
+        n = len(X_flat)
+        p_values = 2 * (1 - stats.t.cdf(np.abs(t_values), n - 2))
+        class ExpModel:
+            def __init__(self, params, pcov, func):
+                self.params, self.pcov, self.func = params, pcov, func
+            def predict(self, x):
+                return self.func(x.ravel(), *self.params)
+        equation = f"y = {popt[0]:.4f}·e^({popt[1]:.4f}x)"
+        return ExpModel(popt, pcov, exp_func), y_pred, equation, p_values
+    except Exception:
+        return None, np.zeros_like(y), "Exponential regression failed", np.array([np.nan, np.nan])
+
+def perform_logarithmic_regression(X, y):
+    X_flat = X.ravel()
+    def log_func(x, a, b):
+        x_safe = np.maximum(x, 1e-5)
+        return a + b * np.log(x_safe)
+    try:
+        popt, pcov = curve_fit(log_func, X_flat, y, p0=(0, 1))
+        y_pred = log_func(X_flat, *popt)
+        perr = np.sqrt(np.diag(pcov))
+        t_values = popt / perr
+        n = len(X_flat)
+        p_values = 2 * (1 - stats.t.cdf(np.abs(t_values), n - 2))
+        class LogModel:
+            def __init__(self, params, pcov, func):
+                self.params, self.pcov, self.func = params, pcov, func
+            def predict(self, x):
+                return self.func(x.ravel(), *self.params)
+        equation = f"y = {popt[0]:.4f} + {popt[1]:.4f}·ln(x)"
+        return LogModel(popt, pcov, log_func), y_pred, equation, p_values
+    except Exception:
+        return None, np.zeros_like(y), "Logarithmic regression failed", np.array([np.nan, np.nan])
+
+def perform_sigmoid_regression(X, y):
+    X_flat = X.ravel()
+    def sigmoid_func(x, L, k, x0):
+        return L / (1 + np.exp(-k * (x - x0)))
+    try:
+        p0 = [np.max(y), 1, np.median(X_flat)]
+        bounds = ([np.min(y)*0.5, 1e-3, np.min(X_flat)-1], [np.max(y)*1.5, 10, np.max(X_flat)+1])
+        popt, pcov = curve_fit(sigmoid_func, X_flat, y, p0=p0, bounds=bounds)
+        y_pred = sigmoid_func(X_flat, *popt)
+        perr = np.sqrt(np.diag(pcov))
+        t_values = popt / perr
+        n = len(X_flat)
+        p_values = 2 * (1 - stats.t.cdf(np.abs(t_values), n - 3))
+        class SigmoidModel:
+            def __init__(self, params, pcov, func):
+                self.params, self.pcov, self.func = params, pcov, func
+            def predict(self, x):
+                return self.func(x.ravel(), *self.params)
+        equation = f"y = {popt[0]:.4f}/(1+e^(-{popt[1]:.4f}(x-{popt[2]:.4f})))"
+        return SigmoidModel(popt, pcov, sigmoid_func), y_pred, equation, p_values
+    except Exception:
+        return None, np.zeros_like(y), "Sigmoid regression failed", np.array([np.nan, np.nan, np.nan])
+
+def analyze_residuals(y_true, y_pred):
+    residuals = y_true - y_pred
+    return {
+        'mean_residual': np.mean(residuals),
+        'std_residual': np.std(residuals),
+        'corr_with_x': np.corrcoef(np.arange(len(residuals)), residuals)[0,1],
+        'abs_mean_residual': np.mean(np.abs(residuals))
+    }
+
+def evaluate_model(y_true, y_pred, model_type, model_name, equation, p_values):
+    r2 = r2_score(y_true, y_pred)
+    mse = mean_squared_error(y_true, y_pred)
+    rmse = np.sqrt(mse)
+    n = len(y_true)
+    if hasattr(model_type, 'coef_'):
+        k = len(model_type.coef_) + 1
+    else:
+        k = len(model_type.params) if hasattr(model_type, 'params') else 3
+    aic, bic = n * np.log(mse) + 2 * k, n * np.log(mse) + k * np.log(n)
+    residual_stats = analyze_residuals(y_true, y_pred)
+    if model_name == 'Linear':
+        significant_p = p_values[1] if len(p_values) > 1 else np.nan
+    elif model_name == 'Quadratic':
+        significant_p = p_values[2] if len(p_values) > 2 else np.nan
+    elif model_name == 'Cubic':
+        significant_p = p_values[3] if len(p_values) > 3 else np.nan
+    else:
+        significant_p = np.max(p_values) if p_values is not None else np.nan
+    return {
+        'model_name': model_name, 'equation': equation, 'r2': r2, 'rmse': rmse,
+        'aic': aic, 'bic': bic, 'y_pred': y_pred,
+        'residual_mean': residual_stats['mean_residual'],
+        'residual_std': residual_stats['std_residual'],
+        'residual_corr': residual_stats['corr_with_x'],
+        'residual_abs_mean': residual_stats['abs_mean'],
+        'p_value': significant_p, 'is_significant': not np.isnan(significant_p) and significant_p < 0.05
+    }
+
+def select_best_model(model_results, x, y, enable_polynomial_simplification=True):
+    valid_models = {k: v for k, v in model_results.items() if not np.isnan(v['bic']) and v['is_significant']}
+    if not valid_models:
+        non_sig_models = {k: v for k, v in model_results.items() if not np.isnan(v['bic'])}
+        if non_sig_models:
+            return max(non_sig_models.items(), key=lambda x: x[1]['r2'])
+        return None, None
+    sorted_models = sorted(valid_models.items(), key=lambda x: x[1]['bic'])
+    if sorted_models[0][0] == 'Cubic' and enable_polynomial_simplification:
+        best_model = sorted_models[0][1]
+        quadratic_model = next((v for k, v in sorted_models if k == 'Quadratic'), None)
+        if quadratic_model:
+            r2_diff = (best_model['r2'] - quadratic_model['r2']) / quadratic_model['r2'] * 100
+            rmse_diff = (quadratic_model['rmse'] - best_model['rmse']) / best_model['rmse'] * 100
+            bic_diff = quadratic_model['bic'] - best_model['bic']
+            n_samples = len(y)
+            if (r2_diff < 5 and rmse_diff < 10) or (bic_diff < n_samples * 0.1):
+                return 'Quadratic', quadratic_model
+    return sorted_models[0][0], sorted_models[0][1]
+
+def calculate_confidence_interval(model, model_name, X, y_true, y_pred, alpha=0.95):
+    n = len(y_true)
+    x_range = np.linspace(X.min(), X.max(), 100).reshape(-1,1)
+    if model_name in ['Linear', 'Quadratic', 'Cubic']:
+        if model_name == 'Linear':
+            X_predict = x_range
+        else:
+            X_predict = model.poly.transform(x_range)
+        y_pred_smooth = model.predict(X_predict)
+        residuals = y_true - y_pred
+        mse = np.mean(residuals**2)
+        df = n - len(model.coef_) - 1
+        X_design = np.c_[np.ones(len(X_predict)), X_predict]
+        xtx = np.dot(X_design.T, X_design)
+        try:
+            xtx_inv = np.linalg.inv(xtx)
+        except np.linalg.LinAlgError:
+            return x_range, y_pred_smooth, np.zeros_like(y_pred_smooth), np.zeros_like(y_pred_smooth)
+        se = np.sqrt(mse * np.diag(np.dot(X_design, np.dot(xtx_inv, X_design.T))))
+        t_val = stats.t.ppf((1 + alpha)/2, df)
+        ci_lower, ci_upper = y_pred_smooth - t_val*se, y_pred_smooth + t_val*se
+        return x_range, y_pred_smooth, ci_lower, ci_upper
+    elif model_name in ['Exponential', 'Logarithmic', 'Sigmoid']:
+        popt, pcov, func = model.params, model.pcov, model.func
+        x_flat = x_range.ravel()
+        y_pred_smooth = func(x_flat, *popt)
+        n_params = len(popt)
+        df = n - n_params
+        t_val = stats.t.ppf((1+alpha)/2, df) if df>0 else 1.96
+        params_samples = np.random.multivariate_normal(popt, pcov, 1000)
+        y_samples = np.array([func(x_flat, *p) for p in params_samples])
+        ci_lower = np.percentile(y_samples, (1-alpha)*100/2, axis=0)
+        ci_upper = np.percentile(y_samples, 100-(1-alpha)*100/2, axis=0)
+        return x_range, y_pred_smooth, ci_lower, ci_upper
+    else:
+        x_range = np.linspace(X.min(), X.max(), 100).reshape(-1,1)
+        y_pred_smooth = np.interp(x_range.ravel(), X.ravel(), y_pred)
+        return x_range, y_pred_smooth, np.zeros_like(y_pred_smooth), np.zeros_like(y_pred_smooth)
+
+def process_groups_by_analysis(analysis_groups, all_results):
+    group_results = {}
+    for group in analysis_groups:
+        group_data = all_results[all_results['analysis'] == group].copy()
+        if len(group_data) < 5:
+            continue
+        X = group_data['x_median'].values.reshape(-1,1)
+        y = group_data['y_median'].values
+        x_flat = X.ravel()
+        model_results, model_objects = {}, {}
+        
+        model, y_pred, p_values = perform_linear_regression(X, y, degree=1)
+        model_objects['Linear'] = model
+        eq = f"y = {model.coef_[0]:.4f}x + {model.intercept_:.4f}"
+        model_results['Linear'] = evaluate_model(y, y_pred, model, 'Linear', eq, p_values)
+
+        model, y_pred, p_values = perform_linear_regression(X, y, degree=2)
+        model_objects['Quadratic'] = model
+        eq = f"y = {model.intercept_:.4f} + {model.coef_[0]:.4f}x + {model.coef_[1]:.4f}x²"
+        model_results['Quadratic'] = evaluate_model(y, y_pred, model, 'Quadratic', eq, p_values)
+
+        model, y_pred, p_values = perform_linear_regression(X, y, degree=3)
+        model_objects['Cubic'] = model
+        eq = f"y = {model.intercept_:.4f} + {model.coef_[0]:.4f}x + {model.coef_[1]:.4f}x² + {model.coef_[2]:.4f}x³"
+        model_results['Cubic'] = evaluate_model(y, y_pred, model, 'Cubic', eq, p_values)
+
+        model, y_pred, eq, p_values = perform_exponential_regression(X, y)
+        if model is not None:
+            model_objects['Exponential'] = model
+            model_results['Exponential'] = evaluate_model(y, y_pred, model, 'Exponential', eq, p_values)
+
+        model, y_pred, eq, p_values = perform_logarithmic_regression(X, y)
+        if model is not None:
+            model_objects['Logarithmic'] = model
+            model_results['Logarithmic'] = evaluate_model(y, y_pred, model, 'Logarithmic', eq, p_values)
+
+        model, y_pred, eq, p_values = perform_sigmoid_regression(X, y)
+        if model is not None:
+            model_objects['Sigmoid'] = model
+            model_results['Sigmoid'] = evaluate_model(y, y_pred, model, 'Sigmoid', eq, p_values)
+
+        best_model_name, best_model = select_best_model(model_results, x_flat, y)
+        if not best_model:
+            continue
+        best_model_obj = model_objects.get(best_model_name)
+        if not best_model_obj:
+            continue
+        
+        group_results[group] = {
+            'best_model_name': best_model_name,
+            'best_model': best_model,
+            'all_models': model_results,
+            'model_objects': model_objects
+        }
+    return group_results
+
+# Main execution
+all_results = pd.read_csv(r"multi_var_smoothing_stats.csv")
+analysis_groups = all_results['analysis'].unique().tolist()
+group_results = process_groups_by_analysis(analysis_groups, all_results)
